@@ -1,11 +1,12 @@
 name: CI
 
 on:
-  push: &trigger_config
-    branches: &branch_list [master, dev, dev-kazuki] 
-    paths-ignore: &ignore_paths ['**.md', '.gitignore', 'LICENSE']
+  push:
+    branches: [ "master", "dev", "dev-kazuki" ]
+    paths-ignore: ["**.md", ".gitignore", "LICENSE"]
   pull_request:
-    <<: *trigger_config
+    branches: [ "master", "dev", "dev-kazuki" ]
+    paths-ignore: ["**.md", ".gitignore", "LICENSE"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -14,7 +15,7 @@ concurrency:
 permissions: {contents: write, pull-requests: write}
 
 jobs:
-  lint: &base_job
+  lint:
     name: Static Analysis
     runs-on: ubuntu-latest
     steps:
@@ -29,7 +30,7 @@ jobs:
       - run: ruff check .
         continue-on-error: true
         name: Run Ruff
-      - &report_step
+      - 
         if: always()
         uses: actions/github-script@v6
         name: Generate Report
@@ -41,8 +42,8 @@ jobs:
             await github.rest[`${context.eventName === 'pull_request' ? 'issues' : 'repos'}`][`${context.eventName === 'pull_request' ? 'createComment' : 'createCommitComment'}`](params);
 
   security:
-    <<: *base_job
     name: Security Scan
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -51,7 +52,10 @@ jobs:
         name: Install Safety
       - run: safety check
         name: Scan Dependencies
-      - <<: *report_step
+      -
+        if: always()
+        uses: actions/github-script@v6
+        name: Generate Report
         with:
           script: |
             const {owner, repo} = context.repo;
@@ -60,9 +64,9 @@ jobs:
             await github.rest[`${context.eventName === 'pull_request' ? 'issues' : 'repos'}`][`${context.eventName === 'pull_request' ? 'createComment' : 'createCommitComment'}`](params);
 
   test:
-    <<: *base_job 
     name: Python ${{ matrix.python-version }} Tests
     needs: [lint, security]
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -82,7 +86,10 @@ jobs:
       - run: tox
         name: Execute Tests
         env: {PYTHON_VERSION: "${{ matrix.python-version }}"}
-      - <<: *report_step
+      - 
+        if: always()
+        uses: actions/github-script@v6
+        name: Generate Report
         with:
           script: |
             const {owner, repo} = context.repo;
