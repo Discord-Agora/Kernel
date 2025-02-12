@@ -50,7 +50,7 @@ jobs:
         with: {python-version: "3.11", cache: pip}
       - run: pip install -U pip safety
         name: Install Safety
-      - run: safety check
+      - run: safety scan
         name: Scan Dependencies
       -
         if: always()
