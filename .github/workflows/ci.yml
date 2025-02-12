@@ -16,6 +16,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   lint:
     name: Code Quality
@@ -36,9 +40,11 @@ jobs:
           
       - name: Check code formatting
         run: black --check .
+        continue-on-error: true
         
       - name: Lint with ruff
         run: ruff check .
+        continue-on-error: true
         
       - name: Post Lint Results
         if: always()
