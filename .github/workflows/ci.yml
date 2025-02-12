@@ -30,7 +30,7 @@ jobs:
       - run: ruff check .
         continue-on-error: true
         name: Run Ruff
-      - 
+      -
         if: always()
         uses: actions/github-script@v6
         name: Generate Report
@@ -46,12 +46,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: {python-version: "3.11", cache: pip}
-      - run: pip install -U pip safety
-        name: Install Safety
-      - run: safety scan
+      - uses: pyupio/safety-action@v1
         name: Scan Dependencies
+        with:
+          api-key: ${{ secrets.SAFETY_API_KEY }}
+          args: --detailed-output
       -
         if: always()
         uses: actions/github-script@v6
@@ -86,7 +85,7 @@ jobs:
       - run: tox
         name: Execute Tests
         env: {PYTHON_VERSION: "${{ matrix.python-version }}"}
-      - 
+      -
         if: always()
         uses: actions/github-script@v6
         name: Generate Report
