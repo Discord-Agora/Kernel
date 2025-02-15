@@ -133,6 +133,11 @@ except Exception as e:
     sys.exit(1)
 
 
+# Remove Token from environment variables
+os.environ.pop("TOKEN")
+# Remove dotenv file (It's copied in the startup script "run.sh")
+os.remove(".env")
+
 """
 Startup
 """
