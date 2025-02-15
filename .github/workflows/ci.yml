@@ -2,17 +2,47 @@ name: CI
 
 on:
   push:
-    branches: [ "master", "dev", "dev-kazuki" ]
-    paths-ignore: ["**.md", ".gitignore", "LICENSE"]
+    branches: ["master", "dev", "dev-kazuki"]
+    paths-ignore:
+      - "**.md"
+      - ".gitignore"
+      - "LICENSE"
+      - "**.yml"
+      - "**.yaml"
+      - "**.pyc"
+      - "**/__pycache__/**"
+      - "**.log"
+      - "venv/**"
+      - "**.env"
+      - ".vscode/**"
+      - ".idea/**"
+      - "doc/**"
+      - "**.template"
+      - "CHANGELOG"
   pull_request:
-    branches: [ "master", "dev", "dev-kazuki" ]
-    paths-ignore: ["**.md", ".gitignore", "LICENSE"]
+    branches: ["master", "dev", "dev-kazuki"]
+    paths-ignore:
+      - "**.md"
+      - ".gitignore"
+      - "LICENSE"
+      - "**.yml"
+      - "**.yaml"
+      - "**.pyc"
+      - "**/__pycache__/**"
+      - "**.log"
+      - "venv/**"
+      - "**.env"
+      - ".vscode/**"
+      - ".idea/**"
+      - "doc/**"
+      - "**.template"
+      - "CHANGELOG"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-permissions: {contents: write, pull-requests: write}
+permissions: { contents: write, pull-requests: write }
 
 jobs:
   lint:
@@ -21,7 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: {python-version: "3.11", cache: pip}
+        with: { python-version: "3.11", cache: pip }
       - run: pip install -U pip black ruff
         name: Install Linters
       - run: black --check .
@@ -30,8 +60,7 @@ jobs:
       - run: ruff check .
         continue-on-error: true
         name: Run Ruff
-      -
-        if: always()
+      - if: always()
         uses: actions/github-script@v6
         name: Generate Report
         with:
@@ -51,8 +80,7 @@ jobs:
         with:
           api-key: ${{ secrets.SAFETY_API_KEY }}
           args: --detailed-output
-      -
-        if: always()
+      - if: always()
         uses: actions/github-script@v6
         name: Generate Report
         with:
@@ -73,7 +101,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: {python-version: "${{ matrix.python-version }}", cache: pip}
+        with: { python-version: "${{ matrix.python-version }}", cache: pip }
       - uses: actions/cache@v3
         name: Cache Tox Environment
         with:
@@ -84,9 +112,8 @@ jobs:
         name: Install Tox
       - run: tox
         name: Execute Tests
-        env: {PYTHON_VERSION: "${{ matrix.python-version }}"}
-      -
-        if: always()
+        env: { PYTHON_VERSION: "${{ matrix.python-version }}" }
+      - if: always()
         uses: actions/github-script@v6
         name: Generate Report
         with:
