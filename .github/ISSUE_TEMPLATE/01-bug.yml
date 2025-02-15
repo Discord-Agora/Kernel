@@ -1,0 +1,93 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in the Discord Bot Framework Kernel
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please provide detailed information to help us investigate and resolve the issue efficiently.
+
+  - type: input
+    id: version
+    attributes:
+      label: Framework Version
+      description: Which version of the Discord Bot Framework Kernel are you using?
+      placeholder: v1.2.3 or commit hash (e.g., abc123)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Environment
+      description: Where was this bug encountered?
+      options:
+        - Production
+        - Development
+        - Local Testing
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python Version
+      description: What Python version are you using?
+      placeholder: e.g., Python 3.11.2
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: Bug Description
+      description: Describe the bug and expected behavior
+      placeholder: |
+        1. Expected behavior
+        2. Actual behavior
+        3. Impact and severity
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction Steps
+      description: Provide steps to reproduce the bug
+      placeholder: |
+        1. Start bot with configuration X
+        2. Execute command Y
+        3. Input parameters Z
+        4. Observe error
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error Logs
+      description: Include relevant error messages or logs
+      placeholder: Paste error logs here
+      render: shell
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: Provide any other relevant information
+      placeholder: |
+        - Screenshots/recordings
+        - System specifications
+        - Configuration details
+        - Attempted solutions
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of Conduct
+      description: By submitting this report, you agree to follow our Code of Conduct
+      options:
+        - label: I agree to follow the project's Code of Conduct
+          required: true

@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: ["master", "dev", "dev-kazuki"]
+    paths-ignore:
+      - "**.md"
+      - ".gitignore"
+      - "LICENSE"
+      - "**.yml"
+      - "**.yaml"
+      - "**.pyc"
+      - "**/__pycache__/**"
+      - "**.log"
+      - "venv/**"
+      - "**.env"
+      - ".vscode/**"
+      - ".idea/**"
+      - "doc/**"
+      - "**.template"
+      - "CHANGELOG"
+  pull_request:
+    branches: ["master", "dev", "dev-kazuki"]
+    paths-ignore:
+      - "**.md"
+      - ".gitignore"
+      - "LICENSE"
+      - "**.yml"
+      - "**.yaml"
+      - "**.pyc"
+      - "**/__pycache__/**"
+      - "**.log"
+      - "venv/**"
+      - "**.env"
+      - ".vscode/**"
+      - ".idea/**"
+      - "doc/**"
+      - "**.template"
+      - "CHANGELOG"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions: { contents: write, pull-requests: write }
+
+jobs:
+  lint:
+    name: Static Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: pip }
+      - run: pip install -U pip black ruff
+        name: Install Linters
+      - run: black --check .
+        continue-on-error: true
+        name: Run Black
+      - run: ruff check .
+        continue-on-error: true
+        name: Run Ruff
+      - if: always()
+        uses: actions/github-script@v6
+        name: Generate Report
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const report = `## Static Analysis Results\nStatus: ${{ job.status }}\n\nTools:\n- Black: Code formatting\n- Ruff: Linting and style\n\n[Full Report](https://github.com/${owner}/${repo}/actions/runs/${context.runId})`;
+            const params = {owner, repo, body: report, ...(context.eventName === 'pull_request' && {issue_number: context.payload.pull_request.number} || {commit_sha: context.sha})};
+            await github.rest[`${context.eventName === 'pull_request' ? 'issues' : 'repos'}`][`${context.eventName === 'pull_request' ? 'createComment' : 'createCommitComment'}`](params);
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pyupio/safety-action@v1
+        name: Scan Dependencies
+        with:
+          api-key: ${{ secrets.SAFETY_API_KEY }}
+          args: --detailed-output
+      - if: always()
+        uses: actions/github-script@v6
+        name: Generate Report
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const report = `## Security Scan Results\nStatus: ${{ job.status }}\n\nTools:\n- Safety: Dependency vulnerability scanning\n\n[Full Report](https://github.com/${owner}/${repo}/actions/runs/${context.runId})`;
+            const params = {owner, repo, body: report, ...(context.eventName === 'pull_request' && {issue_number: context.payload.pull_request.number} || {commit_sha: context.sha})};
+            await github.rest[`${context.eventName === 'pull_request' ? 'issues' : 'repos'}`][`${context.eventName === 'pull_request' ? 'createComment' : 'createCommitComment'}`](params);
+
+  test:
+    name: Python ${{ matrix.python-version }} Tests
+    needs: [lint, security]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ matrix.python-version }}", cache: pip }
+      - uses: actions/cache@v3
+        name: Cache Tox Environment
+        with:
+          path: .tox
+          key: tox-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('tox.ini', 'pyproject.toml') }}
+          restore-keys: tox-${{ runner.os }}-${{ matrix.python-version }}-
+      - run: pip install -U pip tox tox-gh-actions
+        name: Install Tox
+      - run: tox
+        name: Execute Tests
+        env: { PYTHON_VERSION: "${{ matrix.python-version }}" }
+      - if: always()
+        uses: actions/github-script@v6
+        name: Generate Report
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const report = `## Python ${{ matrix.python-version }} Test Report\nStatus: ${{ job.status }}\n\nScope:\n- Core functionality\n- Version compatibility\n- Integration testing\n\n[Full Report](https://github.com/${owner}/${repo}/actions/runs/${context.runId})`;
+            const params = {owner, repo, body: report, ...(context.eventName === 'pull_request' && {issue_number: context.payload.pull_request.number} || {commit_sha: context.sha})};
+            await github.rest[`${context.eventName === 'pull_request' ? 'issues' : 'repos'}`][`${context.eventName === 'pull_request' ? 'createComment' : 'createCommitComment'}`](params);

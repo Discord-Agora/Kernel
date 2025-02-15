@@ -1,0 +1,74 @@
+name: Question
+description: Ask a question about the Discord Bot Framework Kernel
+title: "[Question]: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before submitting a question, please review our documentation and search existing issues.
+
+  - type: dropdown
+    id: question-category
+    attributes:
+      label: Category
+      description: Select the most relevant category
+      options:
+        - Installation & Setup
+        - Module Development
+        - Bot Commands
+        - Security & Permissions
+        - Configuration
+        - Performance
+        - Integration
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: State your question clearly
+      placeholder: |
+        - Objective
+        - Current challenge
+        - Error messages (if any)
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Provide relevant background information
+      placeholder: |
+        - Project scope
+        - Documentation referenced
+        - Attempted solutions
+        - Research findings
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Specify your technical environment
+      placeholder: e.g., Python 3.11, Windows 11, Discord.py 2.0
+
+  - type: textarea
+    id: code-example
+    attributes:
+      label: Code Example
+      description: Include relevant code snippets
+      placeholder: Provide minimal reproducible code example
+      render: python
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Confirmation
+      options:
+        - label: I have searched existing issues and documentation
+          required: true
+        - label: This is a usage/development question, not a bug report
+          required: true 

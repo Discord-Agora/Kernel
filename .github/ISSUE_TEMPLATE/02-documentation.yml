@@ -1,0 +1,69 @@
+name: Documentation Improvement
+description: Suggest improvements or report issues in the documentation
+title: "[Docs]: "
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve our documentation. Please ensure you've reviewed the latest documentation version before submitting.
+
+  - type: dropdown
+    id: doc-type
+    attributes:
+      label: Documentation Section
+      description: Which section needs improvement?
+      options:
+        - README
+        - API Reference
+        - Installation Guide
+        - Module Development
+        - Command Reference
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: Location
+      description: Specify the documentation location
+      placeholder: e.g., README.md#configuration or API docs URL
+    validations:
+      required: true
+
+  - type: textarea
+    id: current-content
+    attributes:
+      label: Current Content
+      description: Quote the section requiring improvement
+      placeholder: Paste the current documentation content here
+
+  - type: textarea
+    id: suggested-changes
+    attributes:
+      label: Suggested Changes
+      description: Describe your proposed improvements
+      placeholder: |
+        - Specific changes needed
+        - Reasoning for changes
+        - Expected benefits
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: Provide context for your suggestion
+      placeholder: Explain why these changes would be beneficial
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation
+      options:
+        - label: I have checked for similar existing issues
+          required: true
+        - label: I have reviewed the latest documentation
+          required: true
