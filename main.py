@@ -737,11 +737,11 @@ async def get_members(
         return default_members
 
     try:
-        guild = (
-            ctx.guild
-            if (ctx and ctx.guild)
-            else await client.fetch_guild(GUILD_ID) if GUILD_ID else None
-        )
+        if ctx and not getattr(ctx, "closed", False):
+            guild = ctx.guild
+        else:
+            guild = await client.fetch_guild(GUILD_ID) if GUILD_ID else None
+
         if not guild:
             return default_members
 
@@ -1187,23 +1187,6 @@ async def cmd_module_load(ctx: interactions.SlashContext, url: str) -> None:
         await send_error(client, ctx, "Failed to clone repository")
         return
 
-    try:
-        module_path = os.path.join(os.getcwd(), "extensions", module)
-        is_valid, error_msg, missing_deps = await validate_module_installation(
-            module_path, module, is_new=True
-        )
-        if not is_valid:
-            try:
-                delete_git_repo(module)
-            except Exception as e:
-                logger.error(f"Failed to cleanup invalid module: {e}")
-            await handle_module_validation_failure(ctx, module, error_msg, missing_deps)
-            return
-    except Exception as e:
-        logger.exception(f"Unexpected error validating module: {e}")
-        await send_error(client, ctx, "Failed to validate module")
-        return
-
     requirements_path = os.path.join(
         os.getcwd(), "extensions", module, "requirements.txt"
     )
@@ -1250,6 +1233,23 @@ async def cmd_module_load(ctx: interactions.SlashContext, url: str) -> None:
     except Exception as e:
         logger.exception(f"Unexpected error installing requirements: {e}")
         await send_error(client, ctx, "Failed to install module requirements")
+        return
+
+    try:
+        module_path = os.path.join(os.getcwd(), "extensions", module)
+        is_valid, error_msg, missing_deps = await validate_module_installation(
+            module_path, module, is_new=True
+        )
+        if not is_valid:
+            try:
+                delete_git_repo(module)
+            except Exception as e:
+                logger.error(f"Failed to cleanup invalid module: {e}")
+            await handle_module_validation_failure(ctx, module, error_msg, missing_deps)
+            return
+    except Exception as e:
+        logger.exception(f"Unexpected error validating module: {e}")
+        await send_error(client, ctx, "Failed to validate module")
         return
 
     try:
@@ -1434,13 +1434,6 @@ async def cmd_module_update(ctx: interactions.SlashContext, module: str) -> None
     module_dir = pathlib.Path(f"extensions/{module}")
     backup_path = os.path.join(BACKUP_DIR, module)
 
-    is_valid, error_msg, missing_deps = await validate_module_installation(
-        str(module_dir), module
-    )
-    if not is_valid:
-        await handle_module_validation_failure(ctx, module, error_msg, missing_deps)
-        return
-
     try:
         info, _ = get_git_repo_info(module)
         embed = await create_embed(
@@ -1525,6 +1518,13 @@ async def cmd_module_update(ctx: interactions.SlashContext, module: str) -> None
     except Exception as e:
         logger.exception(f"Requirements installation failed: {e}")
         await send_error(client, ctx, "Failed to update module dependencies")
+        return
+
+    is_valid, error_msg, missing_deps = await validate_module_installation(
+        str(module_dir), module
+    )
+    if not is_valid:
+        await handle_module_validation_failure(ctx, module, error_msg, missing_deps)
         return
 
     try:
@@ -2030,14 +2030,6 @@ async def cmd_review_update(ctx: interactions.SlashContext) -> None:
 
     executor: interactions.Member = ctx.author
 
-    kernel_path = os.getcwd()
-    is_valid, error_msg, missing_deps = await validate_module_installation(
-        kernel_path, "kernel"
-    )
-    if not is_valid:
-        await handle_module_validation_failure(ctx, "kernel", error_msg, missing_deps)
-        return
-
     try:
         info = get_kernel_repo_info()
     except (ImportError, RuntimeError) as e:
@@ -2116,6 +2108,14 @@ async def cmd_review_update(ctx: interactions.SlashContext) -> None:
         await send_error(client, ctx, "Failed to update kernel dependencies")
         return
 
+    kernel_path = os.getcwd()
+    is_valid, error_msg, missing_deps = await validate_module_installation(
+        kernel_path, "kernel"
+    )
+    if not is_valid:
+        await handle_module_validation_failure(ctx, "kernel", error_msg, missing_deps)
+        return
+
     try:
         result_embed = await create_embed(
             client,
@@ -2186,14 +2186,18 @@ async def main() -> None:
     except Exception as e:
         logger.exception("Unexpected error loading jurigged extension", exc_info=e)
 
-    for ext in sorted(extensions):
+    for ext in sorted(extensions, key=str.casefold):
         try:
-            await load_module_safely(client, ext)
-            logger.info(f"Loaded extension {ext}")
+            if ext == "extensions.template":
+                client.load_extension(ext)
+            else:
+                await load_module_safely(client, ext)
         except (ExtensionException, ImportError) as e:
             logger.error(f"Error loading {ext}", exc_info=e)
         except Exception as e:
             logger.exception(f"Unexpected error loading {ext}", exc_info=e)
+        else:
+            logger.info(f"Loaded extension {ext}")
 
     try:
         await client.astart()
