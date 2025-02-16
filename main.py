@@ -536,39 +536,63 @@ async def validate_module_installation(
     module_path: str, module_name: str, *, is_new: bool = False
 ) -> tuple[bool, str, list[str]]:
     try:
+        logger.info(f"Starting module validation for {module_name}")
+        logger.debug(f"Module path: {module_path}, is_new: {is_new}")
+
         async with aiofiles.tempfile.TemporaryDirectory() as temp_dir:
             temp_path = os.path.join(temp_dir, module_name)
+            logger.debug(f"Created temporary directory at {temp_path}")
 
             if not is_new:
+                logger.info(f"Validating existing module {module_name}")
                 info, valid = get_git_repo_info(module_name)
                 if not valid:
+                    logger.error(f"Invalid git repository for module {module_name}")
                     return False, "Invalid git repository", []
 
                 try:
-                    repo = pygit2.Repository(
-                        pygit2.clone_repository(info.remote_url, temp_path)
+                    logger.debug(f"Cloning repository from {info.remote_url}")
+                    repo = pygit2.clone_repository(info.remote_url, temp_path)
+                    if not os.path.exists(temp_path):
+                        logger.error(f"Git directory not found at {temp_path}")
+                        return False, "Git repository structure invalid", []
+
+                    origin = repo.remotes["origin"]
+                    origin.fetch()
+                    remote_master = repo.lookup_reference(
+                        "refs/remotes/origin/master"
+                    ).target
+                    repo.checkout_tree(repo.get(remote_master))
+                    logger.info("Successfully updated repository")
+                except pygit2.GitError as e:
+                    logger.exception(
+                        f"Git operation failed for {module_name}: {str(e)}"
                     )
-                    repo.remotes["origin"].fetch()
-                    repo.checkout_tree(
-                        repo.get(
-                            repo.lookup_reference("refs/remotes/origin/master").target
-                        )
-                    )
+                    return False, f"Git operation failed: {str(e)}", []
                 except Exception as e:
+                    logger.exception(
+                        f"Failed to fetch updates for {module_name}: {str(e)}"
+                    )
                     return False, f"Failed to fetch updates: {str(e)}", []
             else:
+                logger.info(f"Validating new module at {module_path}")
                 temp_path = module_path
 
             validation_results = await asyncio.create_task(
                 verify_module_structure(temp_path, module_name)
             )
             if not validation_results[0]:
+                logger.error(
+                    f"Module structure validation failed: {validation_results[1]}"
+                )
                 return False, validation_results[1], []
 
             deps_check = verify_module_dependencies(temp_path)
             if not deps_check[0]:
+                logger.error(f"Dependency check failed. Missing: {deps_check[1]}")
                 return False, "Missing dependencies", deps_check[1]
 
+            logger.info(f"Module {module_name} validation completed successfully")
             return True, "", []
 
     except Exception as e:
