@@ -52,6 +52,7 @@ BASE_DIR: str = os.path.abspath(os.path.dirname(__file__))
 LOG_FILE: str = os.path.join(BASE_DIR, "main.log")
 GUILD_ID: int = int(os.environ.get("GUILD_ID", "0"))
 ROLE_ID: str = os.environ.get("ROLE_ID", "0")
+BACKUP_DIR: str = os.path.join(BASE_DIR, ".backup")
 
 logger: logging.Logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -1431,7 +1432,7 @@ async def cmd_module_update(ctx: interactions.SlashContext, module: str) -> None
 
     executor: interactions.Member = ctx.author
     module_dir = pathlib.Path(f"extensions/{module}")
-    old_module_backup = module_dir / ".backup"
+    backup_path = os.path.join(BACKUP_DIR, module)
 
     is_valid, error_msg, missing_deps = await validate_module_installation(
         str(module_dir), module
@@ -1475,11 +1476,12 @@ async def cmd_module_update(ctx: interactions.SlashContext, module: str) -> None
         return
 
     try:
-        old_module_backup.exists() and shutil.rmtree(old_module_backup)
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        shutil.rmtree(backup_path, ignore_errors=True)
         shutil.copytree(
             module_dir,
-            old_module_backup,
-            ignore=shutil.ignore_patterns(".backup", ".git"),
+            backup_path,
+            ignore=shutil.ignore_patterns(".git"),
         )
     except Exception as e:
         logger.error(f"Backup creation failed: {e}")
@@ -1528,12 +1530,12 @@ async def cmd_module_update(ctx: interactions.SlashContext, module: str) -> None
     try:
         client.reload_extension(f"extensions.{module}.main")
         await client.synchronise_interactions(delete_commands=True)
-        old_module_backup.exists() and shutil.rmtree(old_module_backup)
+        shutil.rmtree(backup_path, ignore_errors=True)
     except ExtensionException as e:
-        if old_module_backup.exists():
-            module_dir.exists() and shutil.rmtree(module_dir)
-            shutil.copytree(old_module_backup, module_dir)
-            shutil.rmtree(old_module_backup)
+        if os.path.exists(backup_path):
+            shutil.rmtree(module_dir, ignore_errors=True)
+            shutil.copytree(backup_path, module_dir)
+            shutil.rmtree(backup_path, ignore_errors=True)
             try:
                 client.reload_extension(f"extensions.{module}.main")
                 await client.synchronise_interactions(delete_commands=True)
