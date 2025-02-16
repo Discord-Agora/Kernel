@@ -1215,19 +1215,11 @@ async def cmd_module_update(ctx: interactions.SlashContext, module: str) -> None
         return
 
     executor: interactions.Member = ctx.author
+    module_dir = pathlib.Path(f"extensions/{module}")
+    old_module_backup = module_dir / ".backup"
 
     try:
         info, _ = get_git_repo_info(module)
-    except (ImportError, RuntimeError) as e:
-        logger.error(f"Failed to get module info: {e}")
-        await send_error(client, ctx, f"Failed to access module information: {e}")
-        return
-    except Exception as e:
-        logger.exception(f"Unexpected error getting module info: {e}")
-        await send_error(client, ctx, "Failed to get module information")
-        return
-
-    try:
         embed = await create_embed(
             client,
             "Module Updated",
@@ -1242,14 +1234,16 @@ async def cmd_module_update(ctx: interactions.SlashContext, module: str) -> None
             name="Target Commit", value=f"`{info.remote_head_commit.id}`", inline=True
         )
         embed.set_author(name=executor.display_name, icon_url=executor.avatar_url)
-
         await dm_members(ctx, embeds=[embed])
-    except (AttributeError, ValueError) as e:
-        logger.error(f"Failed to create notification embed: {e}")
+    except (ImportError, RuntimeError, AttributeError, ValueError) as e:
+        logger.error(f"Failed to process module info or create notification: {e}")
+        await send_error(client, ctx, f"Failed to access module information: {e}")
+        return
     except Exception as e:
-        logger.exception(f"Unexpected error sending notification: {e}")
+        logger.exception(f"Unexpected error in initialization: {e}")
+        await send_error(client, ctx, "Failed to initialize update process")
+        return
 
-    module_dir = pathlib.Path(f"extensions/{module}")
     if not module_dir.is_dir():
         await send_error(
             client,
@@ -1259,27 +1253,32 @@ async def cmd_module_update(ctx: interactions.SlashContext, module: str) -> None
         return
 
     try:
-        err = pull_git_repo(module)
-        if err != 0:
-            error_reasons = [
-                "Not a git repository",
-                "Failed to fetch from remote",
-                "Master branch not found",
-            ]
-            error_msg = next(
-                (r for i, r in enumerate(error_reasons) if i == err - 1),
-                "Unknown error",
-            )
-            logger.exception(f"Module update failed: {error_msg}")
-            await send_error(
-                client,
-                ctx,
-                f"Module update failed: {error_msg}. Please try again or contact an administrator.",
-            )
-            return
+        old_module_backup.exists() and shutil.rmtree(old_module_backup)
+        shutil.copytree(
+            module_dir,
+            old_module_backup,
+            ignore=shutil.ignore_patterns(".backup", ".git"),
+        )
     except Exception as e:
-        logger.exception(f"Failed to pull repository updates: {e}")
-        await send_error(client, ctx, f"Failed to update module: {e}")
+        logger.error(f"Backup creation failed: {e}")
+        await send_error(client, ctx, "Failed to create backup before update")
+        return
+
+    error_reasons = [
+        "Not a git repository",
+        "Failed to fetch from remote",
+        "Master branch not found",
+    ]
+    if (err := pull_git_repo(module)) != 0:
+        error_msg = (
+            error_reasons[err - 1] if 0 < err <= len(error_reasons) else "Unknown error"
+        )
+        logger.exception(f"Module update failed: {error_msg}")
+        await send_error(
+            client,
+            ctx,
+            f"Module update failed: {error_msg}. Please try again or contact an administrator.",
+        )
         return
 
     requirements_path = module_dir / "requirements.txt"
@@ -1292,50 +1291,58 @@ async def cmd_module_update(ctx: interactions.SlashContext, module: str) -> None
         return
 
     try:
-        execute_pip_requirements(str(requirements_path))
-    except (ImportError, RuntimeError) as e:
-        logger.error(f"Failed to update requirements: {e}")
-        await send_error(client, ctx, f"Failed to update module dependencies: {e}")
-        return
+        if not execute_pip_requirements(str(requirements_path)):
+            await send_error(
+                client,
+                ctx,
+                f"Failed to install dependencies for module `{module}`. Please check the `requirements.txt` file for errors.",
+            )
+            return
     except Exception as e:
-        logger.exception(f"Unexpected error updating requirements: {e}")
+        logger.exception(f"Requirements installation failed: {e}")
         await send_error(client, ctx, "Failed to update module dependencies")
         return
 
     try:
         client.reload_extension(f"extensions.{module}.main")
         await client.synchronise_interactions(delete_commands=True)
+        old_module_backup.exists() and shutil.rmtree(old_module_backup)
     except ExtensionException as e:
-        logger.error(f"Failed to reload module: {e}")
-        await send_error(client, ctx, f"Failed to reload module: {e}")
-        return
-    except Exception as e:
-        logger.exception(f"Unexpected error reloading module: {e}")
-        await send_error(client, ctx, "Failed to reload module")
+        if old_module_backup.exists():
+            module_dir.exists() and shutil.rmtree(module_dir)
+            shutil.copytree(old_module_backup, module_dir)
+            shutil.rmtree(old_module_backup)
+            try:
+                client.reload_extension(f"extensions.{module}.main")
+                await client.synchronise_interactions(delete_commands=True)
+                await send_error(
+                    client,
+                    ctx,
+                    f"Failed to load new version due to missing dependencies. Reverted to previous version: {e}",
+                )
+            except Exception as restore_error:
+                logger.exception(f"Restoration failed: {restore_error}")
+                await send_error(
+                    client,
+                    ctx,
+                    "Critical error: Failed to restore previous version. Manual intervention required.",
+                )
         return
 
     try:
         changelog_path = module_dir / "CHANGELOG"
-        cl = "No changelog provided"
-        if changelog_path.is_file():
-            async with aiofiles.open(changelog_path) as f:
-                cl = await f.read()
-
+        cl = (
+            await aiofiles.open(changelog_path).read()
+            if changelog_path.is_file()
+            else "No changelog provided"
+        )
         result_embed = await create_embed(
-            client,
-            "Module Update",
-            f"Updated module `{module}` to the latest version.",
+            client, "Module Update", f"Updated module `{module}` to the latest version."
         )
 
-        field_limit = 1000
-        changelog_parts = [
-            cl[i : i + field_limit] for i in range(0, len(cl), field_limit)
-        ]
-
-        for i, part in enumerate(changelog_parts):
-            field_name = "CHANGELOG" if i == 0 else f"CHANGELOG (continued {i+1})"
+        for i, part in enumerate([cl[i : i + 1000] for i in range(0, len(cl), 1000)]):
             result_embed.add_field(
-                name=field_name,
+                name=f"CHANGELOG{' (continued ' + str(i+1) + ')' if i else ''}",
                 value=code_block(part, "py"),
             )
 
@@ -1352,17 +1359,10 @@ async def cmd_module_update(ctx: interactions.SlashContext, module: str) -> None
             wrong_user_message="Only the user who requested this update can control the pagination.",
             hide_buttons_on_stop=True,
         )
-
         await paginator.send(ctx)
-    except (OSError, IOError) as e:
-        logger.error(f"Failed to read changelog: {e}")
-        await send_error(client, ctx, "Failed to read update information")
-    except InteractionException as e:
-        logger.error(f"Failed to send update result: {e}")
-        await send_error(client, ctx, "Failed to display update results")
     except Exception as e:
-        logger.exception(f"Unexpected error displaying update results: {e}")
-        await send_error(client, ctx, "Failed to complete update process")
+        logger.exception(f"Failed to complete update process: {e}")
+        await send_error(client, ctx, "Failed to display update results")
 
 
 """
@@ -1867,7 +1867,18 @@ async def cmd_review_update(ctx: interactions.SlashContext) -> None:
         return
 
     try:
-        execute_pip_requirements(str(requirements_path))
+        if not execute_pip_requirements(str(requirements_path)):
+            logger.error("Failed to install kernel requirements")
+            await send_error(
+                client,
+                ctx,
+                "Failed to update kernel dependencies. Please check requirements.txt for errors.",
+            )
+            return
+    except (ImportError, RuntimeError) as e:
+        logger.error(f"Failed to update requirements: {e}")
+        await send_error(client, ctx, f"Failed to update kernel dependencies: {e}")
+        return
     except Exception as e:
         logger.exception(f"Unexpected error updating requirements: {e}")
         await send_error(client, ctx, "Failed to update kernel dependencies")
