@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["master", "dev", "dev-kazuki"]
+    branches: ["master"]
     paths-ignore:
       - "**.md"
       - ".gitignore"
@@ -20,7 +20,7 @@ on:
       - "**.template"
       - "CHANGELOG"
   pull_request:
-    branches: ["master", "dev", "dev-kazuki"]
+    branches: ["master"]
     paths-ignore:
       - "**.md"
       - ".gitignore"
@@ -79,7 +79,6 @@ jobs:
         name: Scan Dependencies
         with:
           api-key: ${{ secrets.SAFETY_API_KEY }}
-          args: --detailed-output
       - if: always()
         uses: actions/github-script@v6
         name: Generate Report
