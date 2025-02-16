@@ -10,6 +10,7 @@ import tarfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import IntEnum
+from importlib.metadata import PackageNotFoundError, distribution
 from logging.handlers import RotatingFileHandler
 from typing import Any, Callable, Optional, Set, Union
 from urllib.parse import urlsplit
@@ -42,12 +43,15 @@ from interactions.client.errors import (
 )
 from interactions.client.utils import code_block
 from interactions.ext.paginators import Paginator
+from packaging.requirements import Requirement
+from packaging.version import InvalidVersion, Version
 
 load_dotenv()
 
 BASE_DIR: str = os.path.abspath(os.path.dirname(__file__))
 LOG_FILE: str = os.path.join(BASE_DIR, "main.log")
 GUILD_ID: int = int(os.environ.get("GUILD_ID", "0"))
+ROLE_ID: str = os.environ.get("ROLE_ID", "0")
 
 logger: logging.Logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -522,6 +526,197 @@ kernel_debug: interactions.SlashCommand = kernel_base.group(
     name="debug", description="Debug commands"
 )
 
+"""
+Validate functions
+"""
+
+
+async def validate_module_installation(
+    module_path: str, module_name: str, *, is_new: bool = False
+) -> tuple[bool, str, list[str]]:
+    try:
+        async with aiofiles.tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = os.path.join(temp_dir, module_name)
+
+            if not is_new:
+                info, valid = get_git_repo_info(module_name)
+                if not valid:
+                    return False, "Invalid git repository", []
+
+                try:
+                    repo = pygit2.Repository(
+                        pygit2.clone_repository(info.remote_url, temp_path)
+                    )
+                    repo.remotes["origin"].fetch()
+                    repo.checkout_tree(
+                        repo.get(
+                            repo.lookup_reference("refs/remotes/origin/master").target
+                        )
+                    )
+                except Exception as e:
+                    return False, f"Failed to fetch updates: {str(e)}", []
+            else:
+                temp_path = module_path
+
+            validation_results = await asyncio.create_task(
+                verify_module_structure(temp_path, module_name)
+            )
+            if not validation_results[0]:
+                return False, validation_results[1], []
+
+            deps_check = verify_module_dependencies(temp_path)
+            if not deps_check[0]:
+                return False, "Missing dependencies", deps_check[1]
+
+            return True, "", []
+
+    except Exception as e:
+        logger.exception(f"Error validating module update: {e}")
+        return False, f"Validation error: {str(e)}", []
+
+
+async def handle_module_validation_failure(
+    ctx: interactions.SlashContext,
+    module_name: str,
+    error_msg: str,
+    missing_deps: Optional[list[str]] = None,
+) -> None:
+    if missing_deps is None:
+        missing_deps = []
+
+    base_msg = f"Failed to validate module `{module_name}`\nError: {error_msg}"
+
+    if missing_deps:
+        deps_list = "\n- ".join(missing_deps)
+        deps_install = " ".join(missing_deps)
+        deps_msg = f"\nMissing dependencies:\n- {deps_list}"
+        install_msg = "\nYou can install missing dependencies with:"
+        pip_cmd = f"\n```pip install {deps_install}```"
+        description = base_msg + deps_msg + install_msg + pip_cmd
+    else:
+        description = base_msg
+
+    await ctx.send(
+        embeds=[
+            await create_embed(
+                client, "Module Validation Error", description, EmbedColor.ERROR
+            )
+        ],
+        ephemeral=True,
+    )
+
+
+def verify_module_dependencies(module_path: str) -> tuple[bool, list[str]]:
+    try:
+        requirements_file = os.path.join(module_path, "requirements.txt")
+        if not os.path.exists(requirements_file):
+            return True, []
+
+        with open(requirements_file) as f:
+            requirements = {
+                line.strip()
+                for line in f.read().splitlines()
+                if line.strip() and not line.startswith("#")
+            }
+
+        missing_deps = []
+        for req in requirements:
+            try:
+                req_obj = Requirement(req)
+                pkg_dist = distribution(req_obj.name)
+
+                if req_obj.specifier:
+                    if not pkg_dist.version or not req_obj.specifier.contains(
+                        Version(pkg_dist.version)
+                    ):
+                        missing_deps.append(req)
+            except (ValueError, PackageNotFoundError, InvalidVersion):
+                missing_deps.append(req)
+
+        return not bool(missing_deps), missing_deps
+
+    except Exception as e:
+        logger.error(f"Error checking dependencies: {e}")
+        return False, ["Failed to check dependencies"]
+
+
+async def verify_module_structure(
+    module_path: str, module_name: str
+) -> tuple[bool, str]:
+    try:
+        main_file = pathlib.Path(module_path) / "main.py"
+        if not main_file.exists():
+            return False, f"Missing main.py in module {module_name}"
+
+        try:
+            code = main_file.read_bytes().decode()
+            compile(code, str(main_file), "exec", optimize=2, dont_inherit=True)
+        except SyntaxError as e:
+            return False, f"Syntax error in {module_name}/main.py: {e!s}"
+        except UnicodeDecodeError:
+            return False, f"Invalid file encoding in {module_name}/main.py"
+
+        return True, ""
+
+    except (OSError, IOError) as e:
+        logger.error("File system error verifying module: %s", e)
+        return False, f"IO error verifying module files: {e!s}"
+    except Exception as e:
+        logger.error("Unexpected error verifying module: %s", e)
+        return False, f"Failed to verify module files: {e!s}"
+
+
+async def load_module_safely(client: interactions.Client, module_name: str) -> bool:
+    try:
+        module_path: str = f"extensions/{module_name}"
+
+        files_result = verify_module_structure(module_path, module_name)
+        deps_result = verify_module_dependencies(module_path)
+
+        files_valid, error_msg = await files_result
+        if not files_valid:
+            embed = await create_embed(
+                client,
+                "Module Validation Error",
+                f"Failed to validate module `{module_name}`\nError: {error_msg}",
+                EmbedColor.ERROR,
+            )
+            await dm_members(embeds=[embed])
+            return False
+
+        deps_satisfied, missing_deps = deps_result
+        if not deps_satisfied:
+            embed = await create_embed(
+                client,
+                "Module Dependencies Error",
+                f"Module `{module_name}` is missing required dependencies:\n- {chr(10).join(f'- {dep}' for dep in missing_deps)}",
+                EmbedColor.ERROR,
+            )
+            await dm_members(embeds=[embed])
+            return False
+
+        client.load_extension(f"extensions.{module_name}.main")
+        logger.info("Successfully loaded module %s", module_name)
+        return True
+
+    except Exception as e:
+        logger.error("Error loading module %s: %s", module_name, e)
+        try:
+            embed = await create_embed(
+                client,
+                "Module Load Error",
+                f"Failed to load module `{module_name}`\nError: {e}",
+                EmbedColor.ERROR,
+            )
+            await dm_members(embeds=[embed])
+        except Exception as notify_error:
+            logger.error(
+                "Failed to notify admins about %s load error: %s",
+                module_name,
+                notify_error,
+            )
+        return False
+
 
 """
 Member functions
@@ -532,34 +727,42 @@ dm_messages: dict[str, list[interactions.Message]] = dict()
 
 
 async def get_members(
-    ctx: interactions.SlashContext,
+    ctx: Optional[interactions.SlashContext] = None,
 ) -> list[Union[interactions.Member, interactions.User]]:
-    role_id: str | None = os.environ.get("ROLE_ID")
-    if not role_id:
-        return [client.owner] if hasattr(client, "owner") else []
+    owner = getattr(client, "owner", None)
+    default_members = [owner] if owner else []
+
+    if not ROLE_ID:
+        return default_members
 
     try:
-        role: interactions.Role = await ctx.guild.fetch_role(role_id)
-        if not role:
-            return [client.owner] if hasattr(client, "owner") else []
-
-        members: list[Union[interactions.Member, interactions.User]] = list(
-            role.members
+        guild = (
+            ctx.guild
+            if (ctx and ctx.guild)
+            else await client.fetch_guild(GUILD_ID) if GUILD_ID else None
         )
-        if hasattr(client, "owner") and client.owner not in members:
-            members.append(client.owner)
-        return members
+        if not guild:
+            return default_members
+
+        role = await guild.fetch_role(ROLE_ID)
+        if not role:
+            return default_members
+
+        members = set(role.members)
+        if owner:
+            members.add(owner)
+        return list(members)
 
     except (InteractionException, AttributeError) as e:
-        logger.error("Failed to fetch role members: %s", e)
+        logger.error("Failed to fetch members: %s", e)
     except Exception as e:
-        logger.exception("Unexpected error getting key members: %s", e)
+        logger.exception("Unexpected error getting members: %s", e)
 
-    return [client.owner] if hasattr(client, "owner") else []
+    return default_members
 
 
 async def dm_members(
-    ctx: interactions.SlashContext,
+    ctx: Optional[interactions.SlashContext] = None,
     msg: Optional[str] = None,
     *,
     embeds: Optional[list[interactions.Embed]] = None,
@@ -814,11 +1017,7 @@ async def role_check(ctx: interactions.BaseContext) -> bool:
         return any(
             [
                 await interactions.is_owner()(ctx),
-                (
-                    ctx.author.has_role(os.environ.get("ROLE_ID", ""))
-                    if os.environ.get("ROLE_ID")
-                    else False
-                ),
+                (ctx.author.has_role(ROLE_ID) if ROLE_ID else False),
             ]
         )
     except (AttributeError, TypeError, ValueError) as e:
@@ -920,7 +1119,6 @@ async def cmd_module_load(ctx: interactions.SlashContext, url: str) -> None:
         return
 
     git_url, parsed, validated = parse_git_url(url)
-
     if not validated:
         await send_error(
             client,
@@ -936,7 +1134,8 @@ async def cmd_module_load(ctx: interactions.SlashContext, url: str) -> None:
         return
 
     try:
-        if os.path.isdir(os.path.join(os.getcwd(), "extensions", parsed)):
+        module_path = os.path.join(os.getcwd(), "extensions", parsed)
+        if os.path.isdir(module_path):
             await send_error(
                 client,
                 ctx,
@@ -976,21 +1175,37 @@ async def cmd_module_load(ctx: interactions.SlashContext, url: str) -> None:
             return
     except (ImportError, RuntimeError) as e:
         logger.error(f"Error cloning repository: {e}")
-        await send_error(client, ctx, "Failed to clone repository.")
+        await send_error(client, ctx, "Failed to clone repository")
         return
     except OSError as e:
         logger.error(f"OS error cloning repository: {e}")
-        await send_error(client, ctx, "Failed to access repository.")
+        await send_error(client, ctx, "Failed to access repository")
         return
     except Exception as e:
         logger.exception(f"Unexpected error cloning repository: {e}")
         await send_error(client, ctx, "Failed to clone repository")
         return
 
+    try:
+        module_path = os.path.join(os.getcwd(), "extensions", module)
+        is_valid, error_msg, missing_deps = await validate_module_installation(
+            module_path, module, is_new=True
+        )
+        if not is_valid:
+            try:
+                delete_git_repo(module)
+            except Exception as e:
+                logger.error(f"Failed to cleanup invalid module: {e}")
+            await handle_module_validation_failure(ctx, module, error_msg, missing_deps)
+            return
+    except Exception as e:
+        logger.exception(f"Unexpected error validating module: {e}")
+        await send_error(client, ctx, "Failed to validate module")
+        return
+
     requirements_path = os.path.join(
         os.getcwd(), "extensions", module, "requirements.txt"
     )
-
     if not os.path.exists(requirements_path):
         try:
             delete_git_repo(module)
@@ -1218,6 +1433,13 @@ async def cmd_module_update(ctx: interactions.SlashContext, module: str) -> None
     module_dir = pathlib.Path(f"extensions/{module}")
     old_module_backup = module_dir / ".backup"
 
+    is_valid, error_msg, missing_deps = await validate_module_installation(
+        str(module_dir), module
+    )
+    if not is_valid:
+        await handle_module_validation_failure(ctx, module, error_msg, missing_deps)
+        return
+
     try:
         info, _ = get_git_repo_info(module)
         embed = await create_embed(
@@ -1331,11 +1553,11 @@ async def cmd_module_update(ctx: interactions.SlashContext, module: str) -> None
 
     try:
         changelog_path = module_dir / "CHANGELOG"
-        cl = (
-            await aiofiles.open(changelog_path).read()
-            if changelog_path.is_file()
-            else "No changelog provided"
-        )
+        cl = "No changelog provided"
+        if changelog_path.is_file():
+            async with aiofiles.open(changelog_path) as f:
+                cl = await f.read()
+
         result_embed = await create_embed(
             client, "Module Update", f"Updated module `{module}` to the latest version."
         )
@@ -1806,6 +2028,14 @@ async def cmd_review_update(ctx: interactions.SlashContext) -> None:
 
     executor: interactions.Member = ctx.author
 
+    kernel_path = os.getcwd()
+    is_valid, error_msg, missing_deps = await validate_module_installation(
+        kernel_path, "kernel"
+    )
+    if not is_valid:
+        await handle_module_validation_failure(ctx, "kernel", error_msg, missing_deps)
+        return
+
     try:
         info = get_kernel_repo_info()
     except (ImportError, RuntimeError) as e:
@@ -1956,7 +2186,7 @@ async def main() -> None:
 
     for ext in sorted(extensions):
         try:
-            client.load_extension(ext)
+            await load_module_safely(client, ext)
             logger.info(f"Loaded extension {ext}")
         except (ExtensionException, ImportError) as e:
             logger.error(f"Error loading {ext}", exc_info=e)
