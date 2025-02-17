@@ -8,9 +8,6 @@ class Template(interactions.Extension):
     module_base: interactions.SlashCommand = interactions.SlashCommand(
         name="demo", description="A base command, to expand on"
     )
-    module_group_test: interactions.SlashCommand = module_base.group(
-        name="test", description="A sub command, to expand on"
-    )
 
     @module_base.subcommand("hello", sub_cmd_description="Say hello")
     async def hello(self, ctx: interactions.SlashContext) -> None:
