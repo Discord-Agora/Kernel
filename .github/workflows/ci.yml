@@ -19,7 +19,8 @@ on:
       - "doc/**"
       - "**.template"
       - "CHANGELOG"
-  pull_request:
+  pull_request_target:
+    types: [labeled, opened, reopened, synchronize, edited]
     branches: ["master"]
     paths-ignore:
       - "**.md"
@@ -42,82 +43,370 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-permissions: { contents: write, pull-requests: write }
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
 
 jobs:
-  lint:
-    name: Static Analysis
+  validate-pr-title:
+    name: Validate PR Title
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request_target'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.11", cache: pip }
-      - run: pip install -U pip black ruff
-        name: Install Linters
-      - run: black --check .
-        continue-on-error: true
-        name: Run Black
-      - run: ruff check .
-        continue-on-error: true
-        name: Run Ruff
+      - name: Verify Conventional Commit Format
+        uses: ytanikin/PRConventionalCommits@1.1.0
+        with:
+          task_types: '["feat","fix","docs","test","ci","refactor","perf","chore","revert","build","style"]'
+          custom_labels: '{"feat": "enhancement", "fix": "bug", "docs": "documentation", "test": "enhancement", "ci": "enhancement", "refactor": "enhancement", "perf": "enhancement", "chore": "enhancement", "revert": "bug", "build": "enhancement", "style": "enhancement"}'
+          add_label: "true"
+
+  check-signed-commits:
+    name: Verify Commit Signatures
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    if: github.event_name == 'pull_request_target'
+    steps:
+      - name: Check GPG Signatures
+        uses: 1Password/check-signed-commits-action@v1
+        with:
+          comment: |
+            ## Unsigned Commits Found
+
+            This PR contains commits without GPG signatures. Signed commits ensure code authenticity.
+
+            ### Resolution Steps:
+
+            1. [Create GPG key](https://docs.github.com/en/authentication/managing-commit-signature-verification/generating-a-new-gpg-key)
+            2. [Add key to GitHub](https://docs.github.com/en/authentication/managing-commit-signature-verification/adding-a-gpg-key-to-your-github-account)
+            3. [Enable commit signing](https://docs.github.com/en/authentication/managing-commit-signature-verification/signing-commits)
+
+            Need assistance? See [GitHub's guide](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification)
+
+  changed_files:
+    runs-on: ubuntu-latest
+    name: Detect File Changes
+    permissions:
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Track Changed Files
+        id: changed-files
+        uses: tj-actions/changed-files@v45.0.7
+        with:
+          files_yaml: |
+            python:
+              - '**.py'
+              - 'requirements*.txt'
+              - 'pyproject.toml'
+              - 'setup.py'
+            docs:
+              - '**.md'
+              - 'doc/**'
+            config:
+              - '**.yml'
+              - '**.yaml'
+              - '**.json'
+              - '**.toml'
+              - '**.ini'
+              - '.env*'
+          skip_initial_fetch: true
+          diff_relative: true
+          exclude_submodules: true
+          safe_output: true
+          write_output_files: true
+          output_dir: ".github/outputs/changed-files"
+          json: true
+          fail_on_initial_diff_error: true
+
       - if: always()
-        uses: actions/github-script@v6
-        name: Generate Report
+        uses: actions/github-script@v7.0.1
+        name: Generate Change Summary
         with:
           script: |
             const {owner, repo} = context.repo;
-            const report = `## Static Analysis Results\nStatus: ${{ job.status }}\n\nTools:\n- Black: Code formatting\n- Ruff: Linting and style\n\n[Full Report](https://github.com/${owner}/${repo}/actions/runs/${context.runId})`;
-            const params = {owner, repo, body: report, ...(context.eventName === 'pull_request' && {issue_number: context.payload.pull_request.number} || {commit_sha: context.sha})};
-            await github.rest[`${context.eventName === 'pull_request' ? 'issues' : 'repos'}`][`${context.eventName === 'pull_request' ? 'createComment' : 'createCommitComment'}`](params);
+            const report = `## Change Analysis
+            **Status**: ${{ job.status }}
+
+            ### Statistics
+            - New: ${{ steps.changed-files.outputs.added_files_count }}
+            - Modified: ${{ steps.changed-files.outputs.modified_files_count }}
+            - Deleted: ${{ steps.changed-files.outputs.deleted_files_count }}
+            - Renamed: ${{ steps.changed-files.outputs.renamed_files_count }}
+
+            ### Categories
+            - Python: ${{ steps.changed-files.outputs.python_any_changed }}
+            - Docs: ${{ steps.changed-files.outputs.docs_any_changed }}
+            - Config: ${{ steps.changed-files.outputs.config_any_changed }}
+
+            ### Total
+            Changes: ${{ steps.changed-files.outputs.all_changed_and_modified_files_count }}
+
+            [Full Report](https://github.com/${owner}/${repo}/actions/runs/${context.runId})`;
+
+            const params = {
+              owner,
+              repo,
+              body: report,
+              ...(context.eventName === 'pull_request_target' && {issue_number: context.payload.pull_request.number} || {commit_sha: context.sha})
+            };
+
+            await github.rest[`${context.eventName === 'pull_request_target' ? 'issues' : 'repos'}`][`${context.eventName === 'pull_request_target' ? 'createComment' : 'createCommitComment'}`](params);
+
+  lint:
+    name: Code Quality Check
+    needs: [check-signed-commits, changed_files, validate-pr-title]
+    if: "needs.changed_files.outputs.python_any_changed == 'true' || github.event.action != 'labeled' || github.event.label.name == 'pre-commit ci run'"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run Code Analysis
+        uses: super-linter/super-linter@v7.2.1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          VALIDATE_ALL_CODEBASE: ${{ github.event_name != 'pull_request_target' }}
+          DEFAULT_BRANCH: master
+          VALIDATE_PYTHON_BLACK: true
+          VALIDATE_PYTHON_RUFF: true
+          VALIDATE_PYTHON_ISORT: true
+          VALIDATE_PYTHON_PYLINT: true
+          VALIDATE_PYTHON_MYPY: true
+          VALIDATE_YAML: true
+          VALIDATE_JSON: true
+          VALIDATE_MARKDOWN: true
+          VALIDATE_GITHUB_ACTIONS: true
+          VALIDATE_GITLEAKS: true
+          FIX_PYTHON_BLACK: true
+          FIX_PYTHON_ISORT: true
+          FIX_PYTHON_RUFF: true
+          FIX_YAML_PRETTIER: true
+          FILTER_REGEX_EXCLUDE: ".*\\.pyc$|.*/__pycache__/.*|.*/\\.git/.*|.*/\\.vscode/.*|.*/\\.idea/.*|.*/venv/.*|.*/doc/.*"
+          LOG_LEVEL: INFO
+          IGNORE_GITIGNORED_FILES: true
+          IGNORE_GENERATED_FILES: true
+          # GITHUB_ACTIONS_CONFIG_FILE: .github/linters/actionlint.yml
+          # PYTHON_BLACK_CONFIG_FILE: .github/linters/pyproject.toml
+          # PYTHON_RUFF_CONFIG_FILE: .github/linters/ruff.toml
+          # PYTHON_ISORT_CONFIG_FILE: .github/linters/pyproject.toml
+          # PYTHON_PYLINT_CONFIG_FILE: .github/linters/pylintrc
+          # PYTHON_MYPY_CONFIG_FILE: .github/linters/mypy.ini
+          # MARKDOWN_CONFIG_FILE: .github/linters/markdownlint.yml
+          SAVE_SUPER_LINTER_SUMMARY: true
+          ENABLE_GITHUB_ACTIONS_STEP_SUMMARY: true
+          SAVE_SUPER_LINTER_OUTPUT: true
+          SUPER_LINTER_OUTPUT_DIRECTORY_NAME: super-linter-output
+          CREATE_LOG_FILE: true
+          MULTI_STATUS: true
+      - name: Run Style Guide Check
+        uses: wemake-services/wemake-python-styleguide@1.0.0
+        with:
+          reporter: "github-pr-review"
+          path: "."
+          filter_mode: "added"
+          fail_workflow: false
+          options: >-
+            --max-line-complexity=14
+            --max-jones-score=12
+            --max-cognitive-score=12
+            --max-cognitive-average=8
+            --max-imports=12
+            --max-imported-names=50
+            --max-module-members=7
+            --max-methods=7
+            --max-expressions=9
+            --max-local-variables=5
+            --max-arguments=5
+            --max-returns=5
+            --max-attributes=6
+            --max-awaits=5
+            --max-try-body-length=1
+            --max-module-expressions=7
+            --max-function-expressions=4
+            --max-base-classes=3
+            --max-decorators=5
+            --max-string-usages=3
+            --max-asserts=5
+            --max-access-level=4
+            --max-raises=3
+            --max-except-exceptions=3
+            --max-call-level=3
+            --max-annotation-complexity=3
+            --max-import-from-members=8
+            --max-tuple-unpack-length=4
+            --max-type-params=6
+            --max-match-subjects=7
+            --max-match-cases=7
+            --nested-classes-whitelist=Meta,Params,Config
+            --min-name-length=2
+            --max-name-length=45
+            --max-noqa-comments=10
+            --show-violation-links=False
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: stefanzweifel/git-auto-commit-action@v5.1.0
+        if: always()
+        with:
+          commit_message: "style: auto-fix code style issues"
+          commit_options: "--no-verify"
+          file_pattern: "**/*"
+          add_options: "-u"
+          push_options: "--force"
+          skip_dirty_check: false
+          skip_fetch: true
+          create_branch: false
+      - if: always()
+        uses: actions/github-script@v7.0.1
+        name: Generate Analysis Report
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+
+            let linterSummary = '';
+            try {
+              const fs = require('fs');
+              const summaryPath = 'super-linter-output/super-linter-summary.md';
+              if (fs.existsSync(summaryPath)) {
+                linterSummary = fs.readFileSync(summaryPath, 'utf8');
+              }
+            } catch (error) {
+              console.log('Failed to read linter summary:', error);
+            }
+
+            const report = `## Code Quality Report
+
+            ### Status: ${{ job.status }}
+
+            ### Summary
+            ${linterSummary || '*Summary unavailable*'}
+
+            ### Info
+            - Auto-fixes: ${process.env.FIX_PYTHON_BLACK === 'true' ? '✅ on' : '❌ off'}
+
+            [Full Report](https://github.com/${owner}/${repo}/actions/runs/${context.runId})
+
+            ---
+            <sub>Generated by Actions at ${new Date().toISOString()}</sub>`;
+
+            const params = {
+              owner,
+              repo,
+              body: report,
+              ...(context.eventName === 'pull_request_target'
+                ? {issue_number: context.payload.pull_request.number}
+                : {commit_sha: context.sha})
+            };
+
+            await github.rest[context.eventName === 'pull_request_target' ? 'issues' : 'repos']
+              [context.eventName === 'pull_request_target' ? 'createComment' : 'createCommitComment'](params);
 
   security:
     name: Security Scan
+    needs: changed_files
+    if: "needs.changed_files.outputs.python_any_changed == 'true' || needs.changed_files.outputs.config_any_changed == 'true'"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pyupio/safety-action@v1
-        name: Scan Dependencies
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/dependency-review-action@v4.5.0
+        name: Review Dependencies
         with:
-          api-key: ${{ secrets.SAFETY_API_KEY }}
+          fail-on-severity: moderate
+          fail-on-scopes:
+            - runtime
+            - development
+          vulnerability-check: true
+          license-check: true
+          allow-licenses:
+            - MIT
+            - Apache-2.0
+            - BSD-3-Clause
+            - GPL-3.0-or-later
+            - GPL-2.0-or-later
+            - LGPL-3.0-or-later
+            - LGPL-2.1-or-later
+            - AGPL-3.0-or-later
+            - MPL-2.0
+            - EPL-2.0
+          comment-summary-in-pr: on-failure
+          show-openssf-scorecard: true
+          warn-on-openssf-scorecard-level: 5
       - if: always()
-        uses: actions/github-script@v6
-        name: Generate Report
+        uses: actions/github-script@v7.0.1
+        name: Generate Security Report
         with:
           script: |
             const {owner, repo} = context.repo;
-            const report = `## Security Scan Results\nStatus: ${{ job.status }}\n\nTools:\n- Safety: Dependency vulnerability scanning\n\n[Full Report](https://github.com/${owner}/${repo}/actions/runs/${context.runId})`;
-            const params = {owner, repo, body: report, ...(context.eventName === 'pull_request' && {issue_number: context.payload.pull_request.number} || {commit_sha: context.sha})};
-            await github.rest[`${context.eventName === 'pull_request' ? 'issues' : 'repos'}`][`${context.eventName === 'pull_request' ? 'createComment' : 'createCommitComment'}`](params);
+            const report = `## Security Report
+
+            **Status**: ${{ job.status }}
+
+            [Full Report](https://github.com/${owner}/${repo}/actions/runs/${context.runId})`;
+
+            const params = {owner, repo, body: report, ...(context.eventName === 'pull_request_target' && {issue_number: context.payload.pull_request.number} || {commit_sha: context.sha})};
+            await github.rest[`${context.eventName === 'pull_request_target' ? 'issues' : 'repos'}`][`${context.eventName === 'pull_request_target' ? 'createComment' : 'createCommitComment'}`](params);
 
   test:
     name: Python ${{ matrix.python-version }} Tests
-    needs: [lint, security]
+    needs: [lint, security, changed_files]
+    if: "needs.changed_files.outputs.python_any_changed == 'true'"
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.4.0
         with: { python-version: "${{ matrix.python-version }}", cache: pip }
-      - uses: actions/cache@v3
-        name: Cache Tox Environment
+      - uses: actions/cache@v4.2.0
+        name: Cache Deps
+        id: cache-deps
         with:
-          path: .tox
-          key: tox-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('tox.ini', 'pyproject.toml') }}
-          restore-keys: tox-${{ runner.os }}-${{ matrix.python-version }}-
+          path: |
+            ~/.cache/pip
+            ~/.local/lib/python*/site-packages
+            .tox
+            **/__pycache__
+            **/*.pyc
+          key: ${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('**/requirements*.txt', 'pyproject.toml', 'tox.ini') }}
+          restore-keys: |
+            ${{ runner.os }}-py${{ matrix.python-version }}-
+            ${{ runner.os }}-
+          enableCrossOsArchive: true
+          fail-on-cache-miss: false
+          lookup-only: false
       - run: pip install -U pip tox tox-gh-actions
-        name: Install Tox
+        name: Install Test Tools
+        if: steps.cache-deps.outputs.cache-hit != 'true'
       - run: tox
-        name: Execute Tests
-        env: { PYTHON_VERSION: "${{ matrix.python-version }}" }
+        name: Run Tests
+        env:
+          PYTHON_VERSION: "${{ matrix.python-version }}"
+          SEGMENT_DOWNLOAD_TIMEOUT_MINS: "15"
       - if: always()
-        uses: actions/github-script@v6
-        name: Generate Report
+        uses: actions/github-script@v7.0.1
+        name: Generate Test Report
         with:
           script: |
             const {owner, repo} = context.repo;
-            const report = `## Python ${{ matrix.python-version }} Test Report\nStatus: ${{ job.status }}\n\nScope:\n- Core functionality\n- Version compatibility\n- Integration testing\n\n[Full Report](https://github.com/${owner}/${repo}/actions/runs/${context.runId})`;
-            const params = {owner, repo, body: report, ...(context.eventName === 'pull_request' && {issue_number: context.payload.pull_request.number} || {commit_sha: context.sha})};
-            await github.rest[`${context.eventName === 'pull_request' ? 'issues' : 'repos'}`][`${context.eventName === 'pull_request' ? 'createComment' : 'createCommitComment'}`](params);
+            const report = `## Python ${matrix.python-version} Tests
+
+            **Status**: ${{ job.status }}
+
+            [Full Report](https://github.com/${owner}/${repo}/actions/runs/${context.runId})`;
+
+            const params = {owner, repo, body: report, ...(context.eventName === 'pull_request_target' && {issue_number: context.payload.pull_request.number} || {commit_sha: context.sha})};
+            await github.rest[`${context.eventName === 'pull_request_target' ? 'issues' : 'repos'}`][`${context.eventName === 'pull_request_target' ? 'createComment' : 'createCommitComment'}`](params);
